@@ -104,6 +104,8 @@ const char *_PyParser_TokenNames[] = {
     "ATEQUAL",
     "RARROW",
     "ELLIPSIS",
+    "DOLLAR_NAME",
+    "DOLLAR_LBRACE",
     /* This table must match the #defines in token.h! */
     "OP",
     "<ERRORTOKEN>",
@@ -1218,6 +1220,11 @@ PyToken_TwoChars(int c1, int c2)
         case '=':               return ATEQUAL;
         }
         break;
+    case '$':
+        switch (c2) {
+        case '{':               return DOLLAR_LBRACE;
+        }
+        break;
     }
     return OP;
 }
@@ -1338,6 +1345,19 @@ verify_identifier(struct tok_state *tok)
     if (result == 0)
         tok->done = E_IDENTIFIER;
     return result;
+}
+#endif
+
+#ifdef PGEN
+#define verify_dollar_identifier(tok) 1
+#else
+static int
+verify_dollar_identifier(struct tok_state *tok)
+{
+    tok->start += 1;
+    int res = verify_identifier(tok);
+    tok->start -= 1;
+    return res;
 }
 #endif
 
@@ -1532,6 +1552,36 @@ tok_get(struct tok_state *tok, char **p_start, char **p_end)
         *p_end = tok->cur;
 
         return NAME;
+    }
+
+    /* Dollar names and expressions */
+    nonascii = 0;
+    if (c == '$') {
+        c = tok_nextc(tok);
+        switch (c) {
+        case '{':
+            *p_start = tok->start;
+            *p_end = tok->cur;
+            return DOLLAR_LBRACE;
+        }
+        while (is_potential_identifier_char(c)) {
+            if (c >= 128) {
+                nonascii = 1;
+            }
+            c = tok_nextc(tok);
+        }
+        tok_backup(tok, c);
+        if (tok->start == tok->cur - 1) { /* empty identifier */
+            tok->done = E_SYNTAX;
+            return ERRORTOKEN;
+        }
+        if (nonascii && !verify_dollar_identifier(tok)) {
+            return ERRORTOKEN;
+        }
+        *p_start = tok->start;
+        *p_end = tok->cur;
+
+        return DOLLAR_NAME;
     }
 
     /* Newline */

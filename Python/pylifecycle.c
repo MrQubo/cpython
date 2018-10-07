@@ -1452,6 +1452,17 @@ add_main_module(PyInterpreterState *interp)
         Py_DECREF(bimod);
     }
 
+    if (PyDict_GetItemString(d, "__xonsh__") == NULL) {
+        PyObject *xmod = PyImport_ImportModule("xonsh.__xonsh__");
+        if (xmod == NULL) {
+            return _Py_INIT_ERR("Failed to retrieve xonsh module");
+        }
+        if (PyDict_SetItemString(d, "__xonsh__", xmod) < 0) {
+            return _Py_INIT_ERR("Failed to initialize __main__.__xonsh__");
+        }
+        Py_DECREF(xmod);
+    }
+
     /* Main is a little special - imp.is_builtin("__main__") will return
      * False, but BuiltinImporter is still the most appropriate initial
      * setting for its __loader__ attribute. A more suitable value will

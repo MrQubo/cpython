@@ -1066,6 +1066,22 @@ set_context(struct compiling *c, expr_ty e, expr_context_ty ctx, const node *n)
     return 1;
 }
 
+static PyObject *
+make_str_object(char const * str, struct compiling *c) {
+    PyObject * str_object;
+
+    str_object = PyUnicode_InternFromString(str);
+    if (!str_object) {
+        return NULL;
+    }
+    if (PyArena_AddPyObject(c->c_arena, str_object) < 0) {
+        Py_DECREF(str_object);
+        return NULL;
+    }
+
+    return str_object;
+}
+
 static operator_ty
 ast_for_augassign(struct compiling *c, const node *n)
 {
@@ -2053,11 +2069,101 @@ ast_for_setdisplay(struct compiling *c, const node *n)
 }
 
 static expr_ty
+ast_get_xonsh_builtin(struct compiling *c, const node *n)
+{
+    PyObject *xonsh_id;
+
+    xonsh_id = make_str_object("__xonsh__", c);
+    if (!xonsh_id) {
+        return NULL;
+    }
+
+    return Name(xonsh_id, Load, LINENO(n), n->n_col_offset, c->c_arena);
+}
+
+static expr_ty
+ast_get_xonsh_env(struct compiling *c, const node *n)
+{
+    expr_ty xonsh;
+    PyObject *env_id;
+
+    env_id = make_str_object("env", c);
+    if (!env_id) {
+        return NULL;
+    }
+
+    xonsh = ast_get_xonsh_builtin(c, n);
+    if (!xonsh) {
+        Py_DECREF(env_id);
+        return NULL;
+    }
+
+    return Attribute(xonsh, env_id, Load, LINENO(n), n->n_col_offset, c->c_arena);
+}
+
+/* Returns ast for __xonsh_env__[name] */
+static expr_ty
+_ast_for_dollar_str(expr_ty name, struct compiling *c, const node *n)
+{
+    slice_ty idx;
+    expr_ty xenv;
+
+    idx = Index(name, c->c_arena);
+    if (!idx) {
+        return NULL;
+    }
+
+    xenv = ast_get_xonsh_env(c, n);
+    if (!xenv) {
+        return NULL;
+    }
+
+    return Subscript(xenv, idx, Load, LINENO(n), n->n_col_offset, c->c_arena);
+}
+
+static expr_ty
+_ast_for_dollar_name(struct compiling *c, const node *n)
+{
+    PyObject *name_id;
+    expr_ty name;
+
+    name_id = new_identifier(STR(n)+1, c); /* Omit opening '$' symbol */
+    if (!name_id) {
+        return NULL;
+    }
+
+    name = Constant(name_id, LINENO(n), n->n_col_offset, c->c_arena);
+    if (!name) {
+        return NULL;
+    }
+
+    return _ast_for_dollar_str(name, c, n);
+}
+
+static expr_ty
+_ast_for_env_lookup(struct compiling *c, const node *n)
+{
+    expr_ty name;
+
+    assert(TYPE(n) == test);
+
+    name = ast_for_expr(c, n);
+    if (!name) {
+        return NULL;
+    }
+
+    return _ast_for_dollar_str(name, c, n);
+}
+
+static expr_ty
 ast_for_atom(struct compiling *c, const node *n)
 {
-    /* atom: '(' [yield_expr|testlist_comp] ')' | '[' [testlist_comp] ']'
-       | '{' [dictmaker|testlist_comp] '}' | NAME | NUMBER | STRING+
-       | '...' | 'None' | 'True' | 'False'
+    /*  atom: ('(' [yield_expr|testlist_comp] ')' |
+               '[' [testlist_comp] ']' |
+               '${' test '}' |
+               '{' [dictorsetmaker] '}' |
+               NAME | DOLLAR_NAME | NUMBER | STRING+ |
+               '...' | 'None' | 'True' | 'False')
     */
     node *ch = CHILD(n, 0);
 
@@ -2079,6 +2185,9 @@ ast_for_atom(struct compiling *c, const node *n)
             return NULL;
         /* All names start in Load context, but may later be changed. */
         return Name(name, Load, LINENO(n), n->n_col_offset, c->c_arena);
+    }
+    case DOLLAR_NAME: {
+        return _ast_for_dollar_name(c, ch);
     }
     case STRING: {
         expr_ty str = parsestrplus(c, n);
@@ -2199,6 +2308,11 @@ ast_for_atom(struct compiling *c, const node *n)
             }
             return res;
         }
+    }
+    case DOLLAR_LBRACE: { /* environment lookup */
+        ch = CHILD(n, 1);
+
+        return _ast_for_env_lookup(c, ch);
     }
     default:
         PyErr_Format(PyExc_SystemError, "unhandled atom %d", TYPE(ch));
